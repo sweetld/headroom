@@ -14,6 +14,10 @@ a machine short of memory would make the monitor part of the problem.
     headroom.py                    run the widget
     headroom.py --demo             run it on made-up data, to see every state
     headroom.py --screenshot F     render the widget to a PNG and exit
+
+"Free up memory" (the button at the bottom, or the right-click menu) lists what
+holds the RAM and fast swap, app by app, suggests what looks stale and closes
+what you confirm. That part lives in cleanup.py.
 """
 
 import json
@@ -297,6 +301,7 @@ class Model:
             "disk_rate": self.history["disk_rate"][-1], "zram_rate": self.history["zram_rate"][-1],
             "cpu": self.history["cpu"][-1], "shell_swap": 640 * 1024 * 1024,
         }
+        self.cleanup_hint = (4, 11.8 * GiB)
 
 
 # ------------------------------------------------------------ formatting --
@@ -327,12 +332,13 @@ class Renderer:
     out, so the same code paints the window and the --screenshot PNG."""
 
     WIDTH = 340
-    FULL_HEIGHT = 488
+    FULL_HEIGHT = 528
     COMPACT_HEIGHT = 66
     PAD = 16
 
     def __init__(self):
         self.regions = []  # (x, y, w, h, tooltip) for hover help
+        self.buttons = []  # (x, y, w, h, action) for clicks
 
     # -- primitives ---------------------------------------------------------
     @staticmethod
@@ -464,8 +470,20 @@ class Renderer:
             "Red: swapping to disk right now — this is what a freeze feels like."))
 
     # -- whole widget -------------------------------------------------------
+    def button(self, cr, x, y, w, h, label, note, note_colour, action, tip):
+        self.rounded(cr, x, y, w, h, 9)
+        cr.set_source_rgba(1, 1, 1, 0.06)
+        cr.fill()
+        self.text(cr, label, x + 12, y + h / 2 - 8, 11.5, TEXT, Pango.Weight.MEDIUM)
+        if note:
+            self.text(cr, note, x + w - 12, y + h / 2 - 8, 11, note_colour, Pango.Weight.BOLD,
+                      "right", tnum=True)
+        self.buttons.append((x, y, w, h, action))
+        self.regions.append((x, y, w, h, tip))
+
     def draw(self, cr, model, compact):
         self.regions = []
+        self.buttons = []
         width = self.WIDTH
         height = self.COMPACT_HEIGHT if compact else self.FULL_HEIGHT
         cr.set_operator(cairo.OPERATOR_SOURCE)
@@ -574,6 +592,18 @@ class Renderer:
         self.regions.append((p, y, gw, 22,
             "How much of gnome-shell is swapped out. It draws the whole desktop,\n"
             "so when it waits on swap, everything on screen waits with it."))
+
+        hint = getattr(model, "cleanup_hint", None)
+        if hint and hint[0]:
+            count, size = hint
+            note = f"{count} suggestion{'s' if count != 1 else ''} · {fmt_bytes(size)}"
+            note_colour = AMBER
+        else:
+            note, note_colour = "", DIM
+        self.button(cr, p, y + 30, gw, 32, "Free up memory…", note, note_colour, "cleanup",
+                    "See what is holding the RAM and fast swap, app by app,\n"
+                    "and close what you no longer need. Nothing closes\n"
+                    "without you confirming it.")
         if model.demo:
             self.text(cr, "DEMO", width - p - 10, p + 6, 9, AMBER, Pango.Weight.BOLD, "right")
 
@@ -762,6 +792,15 @@ def run_app(demo):
             self.help_timer = None
             self.add(self.area)
 
+            # The clean-up scan runs each minute whether or not its window is
+            # open, so it already knows what has gone unused when you ask.
+            import cleanup
+            self.cleanup_mod = cleanup
+            self.cleanup = cleanup.Cleanup(demo)
+            self.cleanup_window = None
+            self.scan_cleanup()
+            GLib.timeout_add_seconds(60, self.scan_cleanup)
+
             self.apply_size()
             self.place()
             self.connect("configure-event", self.on_configure)
@@ -826,6 +865,29 @@ def run_app(demo):
             self.state["x"], self.state["y"] = x, y
             save_state(self.state)
             return False
+
+        def scan_cleanup(self):
+            try:
+                self.cleanup.refresh()
+                found = self.cleanup.suggestions()
+                self.model.cleanup_hint = (len(found), sum(g.size for g in found))
+            except Exception as e:  # a failed scan must never take the gauge down with it
+                print(f"headroom: clean-up scan failed: {e}", file=sys.stderr)
+            self.area.queue_draw()
+            return True
+
+        def open_cleanup(self):
+            if self.cleanup_window:
+                self.cleanup_window.present()
+                return
+            self.cleanup_window = self.cleanup_mod.CleanupWindow(self.cleanup, self.model)
+            self.cleanup_window.connect("destroy", self.cleanup_closed)
+            self.cleanup_window.show_all()
+            self.cleanup_window.present()
+
+        def cleanup_closed(self, *_):
+            self.cleanup_window = None
+            self.scan_cleanup()
 
         # -- painting -----------------------------------------------------
         def tick(self):
@@ -896,6 +958,12 @@ def run_app(demo):
                 self.toggle("compact")
                 return True
             if event.button == 1:
+                s = self.scale()
+                for bx, by, bw, bh, action in self.renderer.buttons:
+                    if bx <= event.x / s <= bx + bw and by <= event.y / s <= by + bh:
+                        if action == "cleanup":
+                            self.open_cleanup()
+                        return True
                 self.begin_move_drag(event.button, int(event.x_root), int(event.y_root), event.time)
                 return True
             return False
@@ -917,6 +985,10 @@ def run_app(demo):
 
         def menu(self):
             m = Gtk.Menu()
+            cleanup_item = Gtk.MenuItem(label="Free up memory…")
+            cleanup_item.connect("activate", lambda *_: self.open_cleanup())
+            m.append(cleanup_item)
+            m.append(Gtk.SeparatorMenuItem())
 
             def check(label, active, handler):
                 item = Gtk.CheckMenuItem(label=label)
