@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect x="12" y="12" width="232" height="232" rx="52" fill="#16181d"/>
+  <rect x="12" y="12" width="232" height="232" rx="52" fill="none" stroke="#ffffff" stroke-opacity=".08" stroke-width="3"/>
+  <!-- 270° gauge: grey track, green headroom -->
+  <path d="M 72.4 183.6 A 78 78 0 1 1 183.6 183.6" fill="none" stroke="#ffffff" stroke-opacity=".10"
+        stroke-width="22" stroke-linecap="round"/>
+  <path d="M 72.4 183.6 A 78 78 0 0 1 128 50" fill="none" stroke="#3fb950"
+        stroke-width="22" stroke-linecap="round"/>
+  <circle cx="128" cy="128" r="22" fill="#3fb950"/>
+  <circle cx="128" cy="128" r="36" fill="#3fb950" fill-opacity=".22"/>
+</svg>
